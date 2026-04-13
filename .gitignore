@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+.DS_Store
+
+.venv/
+venv/
+
+artifacts/
+mlruns/
+mlflow.db
+
+*.pt
