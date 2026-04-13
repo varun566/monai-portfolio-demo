@@ -22,6 +22,7 @@ import nibabel as nib
 import numpy as np
 import torch
 import torch.distributed as dist
+from monai.apps import DecathlonDataset
 from monai.data import DataLoader, Dataset, DistributedSampler, create_test_image_3d, decollate_batch
 from monai.inferers import sliding_window_inference
 from monai.losses import DiceLoss
@@ -31,21 +32,27 @@ from monai.transforms import (
     Activations,
     AsDiscrete,
     Compose,
+    CropForegroundd,
     EnsureChannelFirstd,
     LoadImaged,
+    Orientationd,
     RandCropByPosNegLabeld,
     RandFlipd,
     RandRotate90d,
     ScaleIntensityd,
+    ScaleIntensityRanged,
+    Spacingd,
 )
 from monai.utils import set_determinism
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MONAI 3D segmentation portfolio demo")
+    parser.add_argument("--dataset", choices=["synthetic", "msd_spleen"], default="synthetic")
     parser.add_argument("--data-dir", type=Path, default=Path("artifacts/synthetic_data"))
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts/run"))
     parser.add_argument("--num-samples", type=int, default=24, help="number of synthetic image/label pairs")
+    parser.add_argument("--cache-rate", type=float, default=0.0, help="cache rate for DecathlonDataset")
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--num-workers", type=int, default=2)
@@ -147,7 +154,7 @@ def build_datasets(data_dir: Path) -> tuple[list[dict[str, str]], list[dict[str,
     return train_files, val_files
 
 
-def build_transforms(roi_size: int) -> tuple[Compose, Compose]:
+def build_synthetic_transforms(roi_size: int) -> tuple[Compose, Compose]:
     train_transforms = Compose(
         [
             LoadImaged(keys=["img", "seg"]),
@@ -175,18 +182,110 @@ def build_transforms(roi_size: int) -> tuple[Compose, Compose]:
     return train_transforms, val_transforms
 
 
+def build_msd_spleen_transforms(roi_size: int) -> tuple[Compose, Compose]:
+    train_transforms = Compose(
+        [
+            LoadImaged(keys=["image", "label"]),
+            EnsureChannelFirstd(keys=["image", "label"]),
+            Orientationd(keys=["image", "label"], axcodes="RAS"),
+            Spacingd(keys=["image", "label"], pixdim=(1.5, 1.5, 2.0), mode=("bilinear", "nearest")),
+            ScaleIntensityRanged(keys=["image"], a_min=-57, a_max=164, b_min=0.0, b_max=1.0, clip=True),
+            CropForegroundd(keys=["image", "label"], source_key="image"),
+            RandCropByPosNegLabeld(
+                keys=["image", "label"],
+                label_key="label",
+                spatial_size=(roi_size, roi_size, roi_size),
+                pos=1,
+                neg=1,
+                num_samples=2,
+            ),
+            RandFlipd(keys=["image", "label"], prob=0.5, spatial_axis=0),
+            RandRotate90d(keys=["image", "label"], prob=0.5, spatial_axes=(0, 2)),
+        ]
+    )
+    val_transforms = Compose(
+        [
+            LoadImaged(keys=["image", "label"]),
+            EnsureChannelFirstd(keys=["image", "label"]),
+            Orientationd(keys=["image", "label"], axcodes="RAS"),
+            Spacingd(keys=["image", "label"], pixdim=(1.5, 1.5, 2.0), mode=("bilinear", "nearest")),
+            ScaleIntensityRanged(keys=["image"], a_min=-57, a_max=164, b_min=0.0, b_max=1.0, clip=True),
+            CropForegroundd(keys=["image", "label"], source_key="image"),
+        ]
+    )
+    return train_transforms, val_transforms
+
+
+def maybe_prepare_msd_spleen_dataset(data_dir: Path, rank: int, seed: int, cache_rate: float, num_workers: int) -> None:
+    if not is_main_process(rank):
+        return
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    DecathlonDataset(
+        root_dir=str(data_dir),
+        task="Task09_Spleen",
+        section="training",
+        transform=(),
+        download=True,
+        seed=seed,
+        cache_rate=cache_rate,
+        num_workers=num_workers,
+    )
+
+
+def build_dataset_objects(
+    args: argparse.Namespace,
+    rank: int,
+    is_distributed: bool,
+) -> tuple[Dataset, Dataset, tuple[str, str], int]:
+    if args.dataset == "synthetic":
+        maybe_generate_synthetic_dataset(args.data_dir, args.num_samples, args.image_size, rank)
+        sync_if_needed(is_distributed)
+        train_files, val_files = build_datasets(args.data_dir)
+        train_transforms, val_transforms = build_synthetic_transforms(args.roi_size)
+        train_ds = Dataset(data=train_files, transform=train_transforms)
+        val_ds = Dataset(data=val_files, transform=val_transforms)
+        return train_ds, val_ds, ("img", "seg"), len(train_files) + len(val_files)
+
+    maybe_prepare_msd_spleen_dataset(
+        data_dir=args.data_dir,
+        rank=rank,
+        seed=args.seed,
+        cache_rate=args.cache_rate,
+        num_workers=args.num_workers,
+    )
+    sync_if_needed(is_distributed)
+    train_transforms, val_transforms = build_msd_spleen_transforms(args.roi_size)
+    train_ds = DecathlonDataset(
+        root_dir=str(args.data_dir),
+        task="Task09_Spleen",
+        section="training",
+        transform=train_transforms,
+        download=False,
+        seed=args.seed,
+        cache_rate=args.cache_rate,
+        num_workers=args.num_workers,
+    )
+    val_ds = DecathlonDataset(
+        root_dir=str(args.data_dir),
+        task="Task09_Spleen",
+        section="validation",
+        transform=val_transforms,
+        download=False,
+        seed=args.seed,
+        cache_rate=args.cache_rate,
+        num_workers=args.num_workers,
+    )
+    return train_ds, val_ds, ("image", "label"), len(train_ds) + len(val_ds)
+
+
 def build_loaders(
-    train_files: list[dict[str, str]],
-    val_files: list[dict[str, str]],
-    roi_size: int,
+    train_ds: Dataset,
+    val_ds: Dataset,
     batch_size: int,
     num_workers: int,
     is_distributed: bool,
 ) -> tuple[DataLoader, DataLoader, DistributedSampler | None]:
-    train_transforms, val_transforms = build_transforms(roi_size)
-    train_ds = Dataset(data=train_files, transform=train_transforms)
-    val_ds = Dataset(data=val_files, transform=val_transforms)
-
     sampler = DistributedSampler(train_ds, even_divisible=True, shuffle=True) if is_distributed else None
     train_loader = DataLoader(
         train_ds,
@@ -248,15 +347,17 @@ def validate(
     device: torch.device,
     roi_size: int,
     sw_batch_size: int,
+    data_keys: tuple[str, str],
 ) -> float:
     metric = DiceMetric(include_background=True, reduction="mean")
     post_pred = Compose([Activations(sigmoid=True), AsDiscrete(threshold=0.5)])
+    image_key, label_key = data_keys
 
     model.eval()
     with torch.no_grad():
         for batch in val_loader:
-            images = batch["img"].to(device)
-            labels = batch["seg"].to(device)
+            images = batch[image_key].to(device)
+            labels = batch[label_key].to(device)
             outputs = sliding_window_inference(
                 inputs=images,
                 roi_size=(roi_size, roi_size, roi_size),
@@ -279,14 +380,10 @@ def main() -> None:
     if device.type == "cuda":
         torch.cuda.set_device(device)
 
-    maybe_generate_synthetic_dataset(args.data_dir, args.num_samples, args.image_size, rank)
-    sync_if_needed(is_distributed)
-
-    train_files, val_files = build_datasets(args.data_dir)
+    train_ds, val_ds, data_keys, dataset_size = build_dataset_objects(args=args, rank=rank, is_distributed=is_distributed)
     train_loader, val_loader, train_sampler = build_loaders(
-        train_files=train_files,
-        val_files=val_files,
-        roi_size=args.roi_size,
+        train_ds=train_ds,
+        val_ds=val_ds,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         is_distributed=is_distributed,
@@ -306,10 +403,11 @@ def main() -> None:
         if mlflow_client is not None:
             mlflow_client.log_params(
                 {
+                    "dataset": args.dataset,
                     "epochs": args.epochs,
                     "batch_size": args.batch_size,
                     "learning_rate": args.learning_rate,
-                    "num_samples": args.num_samples,
+                    "num_samples": dataset_size,
                     "roi_size": args.roi_size,
                     "sw_batch_size": args.sw_batch_size,
                     "num_workers": args.num_workers,
@@ -327,8 +425,8 @@ def main() -> None:
             model.train()
             running_loss = 0.0
             for batch in train_loader:
-                inputs = batch["img"].to(device)
-                labels = batch["seg"].to(device)
+                inputs = batch[data_keys[0]].to(device)
+                labels = batch[data_keys[1]].to(device)
                 optimizer.zero_grad(set_to_none=True)
                 outputs = model(inputs)
                 loss = loss_fn(outputs, labels)
@@ -343,6 +441,7 @@ def main() -> None:
                 device=device,
                 roi_size=args.roi_size,
                 sw_batch_size=args.sw_batch_size,
+                data_keys=data_keys,
             )
             history.append({"epoch": epoch, "train_loss": average_loss, "val_dice": val_dice})
 
@@ -366,10 +465,11 @@ def main() -> None:
         elapsed = time.time() - start_time
         if is_main_process(rank):
             metrics = {
+                "dataset": args.dataset,
                 "world_size": world_size,
                 "device": str(device),
                 "epochs": args.epochs,
-                "num_samples": args.num_samples,
+                "num_samples": dataset_size,
                 "best_val_dice": best_dice,
                 "elapsed_seconds": elapsed,
                 "history": history,

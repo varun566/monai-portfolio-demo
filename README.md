@@ -1,5 +1,7 @@
 # MONAI Portfolio Demo
 
+Reproducible 3D medical image segmentation workflow using `MONAI`, `PyTorch`, and `MLflow`, with an HPC-oriented distributed training path and `SLURM` launch template.
+
 This project is a small, reproducible medical image segmentation demo built on top of [MONAI](https://github.com/Project-MONAI/MONAI). It is designed to showcase the parts of the job description that are realistic to demonstrate in a portfolio:
 
 - PyTorch and MONAI-based 3D medical image segmentation
@@ -19,10 +21,21 @@ Core capabilities demonstrated here:
 
 - 3D volumetric segmentation with MONAI transforms and a UNet-based model
 - synthetic NIfTI data generation for fast, reproducible local testing
+- support for a real public dataset via Medical Segmentation Decathlon Spleen
 - Dice-based validation and sliding-window inference
 - MLflow logging for parameters, metrics, runtime, and artifacts
 - optional distributed execution with `torchrun`
 - a `SLURM` submission template for shared GPU environments
+
+## Why This Repo Matters
+
+This repo is designed to be easy for recruiters and hiring managers to scan. It shows practical experience with:
+
+- medical image analysis workflows
+- PyTorch-based model development
+- experiment tracking and reproducibility
+- Linux and HPC-oriented execution patterns
+- code organized as a small, runnable research engineering project
 
 ## What Is Mine
 
@@ -45,6 +58,8 @@ Create an environment with PyTorch and MONAI installed, then run:
 python -m pip install -r requirements.txt
 python train_segmentation_demo.py --epochs 2 --output-dir artifacts/run/local
 ```
+
+This default command uses the synthetic dataset path for a fast local sanity check.
 
 Expected outputs:
 
@@ -69,6 +84,28 @@ mlflow ui --backend-store-uri sqlite:///mlflow.db
 
 Then open [http://127.0.0.1:5000](http://127.0.0.1:5000).
 
+## Real Dataset Run
+
+The script also supports the public Medical Segmentation Decathlon Spleen dataset through MONAI's `DecathlonDataset`.
+
+Example:
+
+```bash
+python train_segmentation_demo.py \
+  --dataset msd_spleen \
+  --data-dir artifacts/msd_spleen \
+  --epochs 2 \
+  --output-dir artifacts/run/msd_spleen \
+  --mlflow \
+  --mlflow-experiment monai-portfolio-demo
+```
+
+Notes:
+
+- the first run downloads and prepares the dataset automatically
+- this path is more representative of real medical imaging experimentation than the synthetic demo
+- on CPU it may be slow; a GPU-enabled environment is strongly preferred
+
 ## Results
 
 This project logs segmentation experiments in MLflow using a local SQLite-backed tracking store. In a 2-epoch CPU run on synthetic 3D NIfTI volumes:
@@ -85,6 +122,10 @@ The workflow also saves reproducible artifacts, including:
 Recommended README screenshot:
 
 - MLflow run details page showing parameters, metrics, and model artifacts
+
+Suggested GitHub screenshot placement:
+
+- add the MLflow run-details screenshot directly below this section
 
 ## Multi-GPU Run
 
@@ -109,6 +150,7 @@ Things I would adapt on a real cluster:
 - dataset staging to scratch storage
 - logging GPU, memory, and CPU utilization with tools such as `nvidia-smi`, `sstat`, and cluster profiling utilities
 - pointing MLflow at a shared tracking server for team-visible experiment history
+- adjusting storage paths to use shared scratch or project storage for larger imaging datasets
 
 ## Resume / Portfolio Framing
 
@@ -123,15 +165,17 @@ You can also expand it for an interview:
 - added MLflow-based experiment tracking for parameters, metrics, and model artifacts
 - added a PyTorch DDP path to mirror multi-GPU training patterns used on HPC systems
 - prepared a SLURM submission template to show how the same workflow can be adapted to shared GPU clusters
+- added a real-dataset execution path using the MSD Spleen benchmark to make the project more representative of applied research workflows
 
 ## Suggested Next Steps
 
 To move this closer to the target JD, I would add one or two of these next:
 
-- swap the synthetic dataset for a public dataset such as MSD Spleen or BTCV
+- benchmark the new MSD Spleen path and document the results
+- swap from MSD Spleen to a larger benchmark such as BTCV
 - benchmark runs in a shared MLflow tracking server or TensorBoard instance
 - containerize the run with Apptainer or Docker
 - benchmark throughput and utilization across 1 GPU vs. multi-GPU runs
 - add uncertainty estimation or calibration metrics for model quality analysis
 
-The highest-value next step is replacing the synthetic dataset with a real public medical imaging dataset. That would make the project much stronger for research-oriented AI and HPC roles.
+The highest-value next step now is to run and document the MSD Spleen experiment, then compare that real-dataset workflow with the fast synthetic sanity-check path.
