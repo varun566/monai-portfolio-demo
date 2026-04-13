@@ -119,6 +119,13 @@ The workflow also saves reproducible artifacts, including:
 - `metrics.json`
 - `best_model.pt`
 
+In a 2-epoch CPU run on the real Medical Segmentation Decathlon Spleen dataset:
+
+- training loss decreased from `0.8993` to `0.8918`
+- validation Dice improved from `0.0265` to `0.0367`
+
+These real-dataset numbers are intentionally presented as an early proof-of-work run, not as a tuned benchmark. The main value is demonstrating a functioning MONAI pipeline on a public medical imaging dataset with experiment tracking and reproducible outputs.
+
 Recommended README screenshot:
 
 - MLflow run details page showing parameters, metrics, and model artifacts
@@ -179,3 +186,5 @@ To move this closer to the target JD, I would add one or two of these next:
 - add uncertainty estimation or calibration metrics for model quality analysis
 
 The highest-value next step now is to run and document the MSD Spleen experiment, then compare that real-dataset workflow with the fast synthetic sanity-check path.
+
+Another strong next step would be increasing training time and tuning the model configuration on MSD Spleen so the repo includes a more meaningful real-dataset validation score.

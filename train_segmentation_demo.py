@@ -14,9 +14,12 @@ import argparse
 import json
 import os
 import random
+import subprocess
+import tarfile
 import time
 from contextlib import nullcontext
 from pathlib import Path
+from urllib.error import URLError
 
 import nibabel as nib
 import numpy as np
@@ -221,16 +224,44 @@ def maybe_prepare_msd_spleen_dataset(data_dir: Path, rank: int, seed: int, cache
         return
 
     data_dir.mkdir(parents=True, exist_ok=True)
-    DecathlonDataset(
-        root_dir=str(data_dir),
-        task="Task09_Spleen",
-        section="training",
-        transform=(),
-        download=True,
-        seed=seed,
-        cache_rate=cache_rate,
-        num_workers=num_workers,
-    )
+    try:
+        DecathlonDataset(
+            root_dir=str(data_dir),
+            task="Task09_Spleen",
+            section="training",
+            transform=(),
+            download=True,
+            seed=seed,
+            cache_rate=cache_rate,
+            num_workers=num_workers,
+        )
+        return
+    except URLError as exc:
+        error_text = str(exc.reason)
+        if "CERTIFICATE_VERIFY_FAILED" not in error_text:
+            raise
+        print("MONAI dataset download hit a local Python SSL certificate issue. Falling back to curl download.")
+    except Exception:
+        raise
+
+    download_msd_spleen_with_curl(data_dir)
+
+
+def download_msd_spleen_with_curl(data_dir: Path) -> None:
+    archive_path = data_dir / "Task09_Spleen.tar"
+    extract_root = data_dir
+    url = DecathlonDataset.resource["Task09_Spleen"]
+
+    if not archive_path.exists():
+        subprocess.run(
+            ["curl", "-L", url, "-o", str(archive_path)],
+            check=True,
+        )
+
+    task_dir = extract_root / "Task09_Spleen"
+    if not task_dir.exists():
+        with tarfile.open(archive_path) as tar:
+            tar.extractall(path=extract_root)
 
 
 def build_dataset_objects(
